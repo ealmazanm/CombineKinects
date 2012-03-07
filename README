@@ -6,3 +6,6 @@ This project needs to add the followoing property sheets:
 
 
 It also needs to add the project KinectUtils.
+
+
+Inside KinectUtils there is a class called filePaths. These paths will need to be updated  with your own paths.
