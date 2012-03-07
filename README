@@ -1,0 +1,8 @@
+This project needs to add the followoing property sheets:
+
+- openNI.prop
+- openCV.prop
+- boost.prop
+
+
+It also needs to add the project KinectUtils.
