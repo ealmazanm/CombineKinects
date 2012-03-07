@@ -188,6 +188,7 @@ void fillImages(int x, int y, const XnDepthPixel** depthMap, CameraProperties* c
 				(*colorMap)[y_2d*XN_VGA_X_RES+x_2d] = color;
 			}
 //			mylock.unlock();
+			//test
 		}
 	}
 }
