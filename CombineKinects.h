@@ -14,6 +14,7 @@
 #include <string>
 #include <new>
 #include <list>
+#include <time.h>
 
 using namespace std;
 using namespace xn;

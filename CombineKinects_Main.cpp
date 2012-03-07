@@ -1,8 +1,5 @@
 #include "CombineKinects.h"
 
-/*Global variables*/
-boost::mutex mymutex;
-
 /*header methods*/
 //Take the rgb image and the depth map of cam
 void grabImage(CameraProperties* cam, IplImage* depthImg, XnDepthPixel* depthMap);
@@ -26,7 +23,7 @@ void getActivityMapImage(const str_actMap* actMap, IplImage* actMapImg, const Xn
 
 //Fill the activity map with the information from the depthMap. BackProject the pixels into points in the space and then project them again
 // but into the ground plane. if camId = CAMID_TRANSFORMATION then the point in the space is transformed (R and t).
-void fillImages(int x, int y, const XnDepthPixel** depthMap, CameraProperties* cam, const str_actMap* actMap, IplImage* actMapImg, int** colorMap);
+void fillPoints(int x, int y, const XnDepthPixel** depthMap, CameraProperties* cam, const str_actMap* actMap, IplImage* actMapImg, int** colorMap);
 
 //Finde the projection of value in the ground plane.
 int findCoordinate(float value, float minValue, float maxValue, double step);
@@ -127,15 +124,6 @@ void getActivityMapImage(const str_actMap* actMap, IplImage* actMapImg, const Xn
 {
 	//Color map to store the height from 0 to 255.
 	int* colorMap = new int[(XN_VGA_X_RES*2)*XN_VGA_Y_RES];
-	//init the colorMap to 0;
-/*	for (int y = 0; y < XN_VGA_Y_RES; y++)
-	{
-		for (int x = 0; x < XN_VGA_X_RES*2; x++)
-		{
-			colorMap[y*XN_VGA_X_RES+x] = 0;
-		}
-	}
-*/
 	Utils::initImage3Channel(actMapImg, 0);
 
 	for (int y = 0; y < XN_VGA_Y_RES; y++)
@@ -143,20 +131,17 @@ void getActivityMapImage(const str_actMap* actMap, IplImage* actMapImg, const Xn
 		for (int x= 0; x < XN_VGA_X_RES; x++)
 		{
 			//cam1
-			//boost::thread thr(fillImages, x, y, depthMap1, cam1, actMap, actMapImg, &colorMap);
-			fillImages(x, y, depthMap1, cam1, actMap, actMapImg, &colorMap);
+			fillPoints(x, y, depthMap1, cam1, actMap, actMapImg, &colorMap);
 			//cam2
-			fillImages(x, y, depthMap2, cam2, actMap, actMapImg, &colorMap);
-			//thr.join();
+			fillPoints(x, y, depthMap2, cam2, actMap, actMapImg, &colorMap);
 		}
 	}
-	cout << "Frame" << endl;
+
 	delete(colorMap);
 }
 
-void fillImages(int x, int y, const XnDepthPixel** depthMap, CameraProperties* cam, const str_actMap* actMap, IplImage* actMapImg, int** colorMap)
+void fillPoints(int x, int y, const XnDepthPixel** depthMap, CameraProperties* cam, const str_actMap* actMap, IplImage* actMapImg, int** colorMap)
 {
-//	boost::mutex::scoped_lock mylock(mymutex, boost::defer_lock); // defer_lock makes it initially unlocked
 	XnPoint3D p3D, p;
 	int z = (*depthMap)[y*XN_VGA_X_RES+x];	
 	if (z != 0)
@@ -178,7 +163,6 @@ void fillImages(int x, int y, const XnDepthPixel** depthMap, CameraProperties* c
 			findHeatColour(color, &r, &g, &b);
 
 			//Create activity map using heat color for the height
-//			mylock.lock();
 			uchar* ptr_Bs = (uchar*)(actMapImg->imageData + (y_2d*actMapImg->widthStep));
 			if ((*colorMap)[y_2d*XN_VGA_X_RES+x_2d] < color)
 			{			
@@ -187,8 +171,6 @@ void fillImages(int x, int y, const XnDepthPixel** depthMap, CameraProperties* c
 				ptr_Bs[x_2d*3 + 2] = r;
 				(*colorMap)[y_2d*XN_VGA_X_RES+x_2d] = color;
 			}
-//			mylock.unlock();
-			//test
 		}
 	}
 }
@@ -278,6 +260,7 @@ int main()
 
 	while (!stop)
 	{
+		clock_t begin = clock();
 		//take images (threads) 
 		boost::thread thr(grabImage, &cam2, rgbImg2, depthMap2);
 		grabImage(&cam1, rgbImg1, depthMap1);
@@ -300,6 +283,11 @@ int main()
 		cvShowImage(wind_actMap, actMapImg);
 		char c = cvWaitKey(1);
 		stop = (c == 27);
+
+		double total = clock()-begin;
+		double totalSeconds = total/CLOCKS_PER_SEC;
+		double frameRate = 1/totalSeconds;
+		cout << "fps: " << frameRate << endl;
 
 	}
 	//Teminate capturing images
