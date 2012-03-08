@@ -1,5 +1,8 @@
 #include "CombineKinects.h"
 
+/*Global variable*/
+CvMat* translation_Amp;
+
 /*header methods*/
 //Take the rgb image and the depth map of cam
 void grabImage(CameraProperties* cam, IplImage* depthImg, XnDepthPixel* depthMap);
@@ -17,6 +20,12 @@ void compareValues(XnPoint3D *p3D, float* minX, float* maxX, float* minY, float*
 
 //Calcualte the width of the grid based on the min and max values and the number of bins.
 float findStep(float fmin, float fmax, int nBins);
+
+//Transform 3D points from src to dst (Rotation and translation)
+void transformPoints(vector<XnPoint3D>* dst, vector<XnPoint3D>* src, CameraProperties* cam);
+
+//Generate activity map from point list 'points'
+void createImage(vector<XnPoint3D>* points, const str_actMap* actMap, IplImage* actMapImg, int** colorMap);
 
 //Create a combined activity map from the depthMaps
 void getActivityMapImage(const str_actMap* actMap, IplImage* actMapImg, const XnDepthPixel** depthMap1, CameraProperties* cam1 ,const XnDepthPixel** depthMap2, CameraProperties* cam2);
@@ -126,18 +135,96 @@ void getActivityMapImage(const str_actMap* actMap, IplImage* actMapImg, const Xn
 	int* colorMap = new int[(XN_VGA_X_RES*2)*XN_VGA_Y_RES];
 	Utils::initImage3Channel(actMapImg, 0);
 
+	vector<XnPoint3D> pointsCam1(XN_VGA_X_RES*XN_VGA_Y_RES);
+	vector<XnPoint3D> pointsCam2(XN_VGA_X_RES*XN_VGA_Y_RES);
+	vector<XnPoint3D> pointsCam1_T(XN_VGA_X_RES*XN_VGA_Y_RES);
+
+	//Back project all the points from both cameras
+	int cont = 0;
 	for (int y = 0; y < XN_VGA_Y_RES; y++)
 	{
 		for (int x= 0; x < XN_VGA_X_RES; x++)
 		{
-			//cam1
-			fillPoints(x, y, depthMap1, cam1, actMap, actMapImg, &colorMap);
-			//cam2
-			fillPoints(x, y, depthMap2, cam2, actMap, actMapImg, &colorMap);
+			XnPoint3D p3DCam1, p3DCam2;
+			XnPoint3D p2DCam1, p2DCam2;
+			p2DCam1.X = x; p2DCam1.Y = y;
+			p2DCam2.X = x; p2DCam2.Y = y;
+			p2DCam1.Z = (*depthMap1)[y*XN_VGA_X_RES+x];
+			p2DCam2.Z = (*depthMap2)[y*XN_VGA_X_RES+x];
+		
+			cam1->backProjectPoint(&p2DCam1, &p3DCam1);
+			cam2->backProjectPoint(&p2DCam2, &p3DCam2);
+
+			pointsCam1[cont] = p3DCam1;
+			pointsCam2[cont++] = p3DCam2;
 		}
 	}
 
+	//Transform all the points (R and t) from cam1-cs to cam2-cs
+	transformPoints(&pointsCam1_T, &pointsCam1, cam1);
+
+	createImage(&pointsCam1_T, actMap, actMapImg, &colorMap);
+	createImage(&pointsCam2, actMap, actMapImg, &colorMap);
+
 	delete(colorMap);
+}
+
+void createImage(vector<XnPoint3D>* points, const str_actMap* actMap, IplImage* actMapImg, int** colorMap)
+{
+	vector<XnPoint3D>::iterator iter;
+	for (iter = points->begin(); iter != points->end(); iter++)
+	{
+		XnPoint3D p3D = *iter;
+		if (p3D.Y > -500) // filter the height.
+		{
+			int x_2d = findCoordinate(p3D.X, actMap->minX, actMap->maxX, actMap->stepX);
+			int y_2d = findCoordinate(p3D.Z, actMap->minZ, actMap->maxZ, actMap->stepZ);
+			int color = findColor(p3D.Y, actMap->minY, actMap->maxY, actMap->stepY); //between 0 and 255
+
+			//Create depth image using heat color for the height
+			int r, g, b;
+			findHeatColour(color, &r, &g, &b);
+
+			//Create activity map using heat color for the height
+			uchar* ptr_Bs = (uchar*)(actMapImg->imageData + (y_2d*actMapImg->widthStep));
+			if ((*colorMap)[y_2d*XN_VGA_X_RES+x_2d] < color)
+			{			
+				ptr_Bs[x_2d*3] = b;
+				ptr_Bs[x_2d*3 + 1] = g;
+				ptr_Bs[x_2d*3 + 2] = r;
+				(*colorMap)[y_2d*XN_VGA_X_RES+x_2d] = color;
+			}
+		}
+	}
+}
+
+void transformPoints(vector<XnPoint3D>* dst, vector<XnPoint3D>* src, CameraProperties* cam)
+{
+	int total  = src->size();
+	//create a 3xn matrix of points
+	CvMat* src_mat = cvCreateMat(3, total, CV_32FC1);
+	Utils::fillTheMatrix(src, src_mat);
+
+	//multiply by rotation and add translation
+	CvMat* tmp = cvCreateMat(3, total, CV_32FC1);
+	cvMatMul(cam->getRotationMatrix(), src_mat, tmp);
+
+	CvMat* outMat = cvCreateMat(3, total, CV_32FC1);
+	cvAdd(tmp, translation_Amp, outMat);
+
+
+	//fill the list of points
+	float *ptr_Out_C1 = (float*)outMat->data.fl;
+	float *ptr_Out_C2 = (float*)outMat->data.fl + outMat->step/sizeof(float);
+	float *ptr_Out_C3 = (float*)outMat->data.fl + 2*outMat->step/sizeof(float);
+	for (int i = 0; i < total; i++)
+	{
+		XnPoint3D* p = new XnPoint3D;
+		p->X = ptr_Out_C1[i];
+		p->Y = ptr_Out_C2[i];
+		p->Z = ptr_Out_C3[i];
+		(*dst)[i] = *p;
+	}
 }
 
 void fillPoints(int x, int y, const XnDepthPixel** depthMap, CameraProperties* cam, const str_actMap* actMap, IplImage* actMapImg, int** colorMap)
@@ -230,6 +317,20 @@ int main()
 	Utils::rgbdInit(&cam1, &cam2);
 	Utils::loadCameraParameters(&cam1);
 	Utils::loadCameraParameters(&cam2);
+
+	//Init tranlsation matrix
+	int total = XN_VGA_X_RES*XN_VGA_Y_RES;
+	translation_Amp = cvCreateMat(3, total, CV_32FC1);
+	for (int r = 0; r < 3; r++)
+	{
+		float val_T = (float)cam1.getTranslationMatrix()->data.fl[r];
+		float *ptr_Amp = (float*)translation_Amp->data.fl + (r*translation_Amp->step/(sizeof(float)));
+		for (int i = 0 ; i  < total; i++)
+		{
+			ptr_Amp[i] = val_T;
+		}
+	}
+
 
 	//declare image variables
 	IplImage* rgbImg1 = cvCreateImage(cvSize(XN_VGA_X_RES, XN_VGA_Y_RES), IPL_DEPTH_8U, 3);
