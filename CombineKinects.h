@@ -1,3 +1,10 @@
+/**
+* Header file to define some types for combining data from two kinects
+*
+* Libraries: OpenNI, OpenCV, Boost.
+*
+* Author: Emilio J. Almazan <emilio.almazan@kingston.ac.uk>, 2012
+*/
 #pragma once
 #include "XnCppWrapper.h"
 #include "CameraProperties.h"
@@ -26,7 +33,7 @@ const int CAMID_TRANSFORMATION = 1;
 const int MAX_DEPTH = 10000;
 static  ofstream outDebug;
 
-
+//Define the limits and bins of the activity map.
 struct str_actMap
 {
 	float maxX;
