@@ -46,3 +46,12 @@ struct str_actMap
 	float stepY;
 	float stepZ;
 };
+
+struct str_Point
+{
+	int x;
+	int y;
+	int r;
+	int g;
+	int b;
+};
