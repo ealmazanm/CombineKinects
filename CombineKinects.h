@@ -31,7 +31,7 @@ using std::string;
 //Select the camera cs that will be transformed into the other.
 const int CAMID_TRANSFORMATION = 1;
 const int MAX_DEPTH = 10000;
-static  ofstream outDebug;
+//static  ofstream outDebug;
 
 //Define the limits and bins of the activity map.
 struct str_actMap

@@ -9,13 +9,23 @@
 using namespace boost::posix_time;
 
 /*Global variable*/
+const double TILT_ANGLE = 0.13962634;
+const int MAX_Z = 5000; // delimits the depth of the display
+const int MAX_Y = -500; // the Y axis goes from possitive to negative
+ofstream outDebug(filePaths::DEBUG_FILEPATH, ios::out);
 CvMat* translation_Amp;
 str_actMap actMap_confVal;
+bool cam1Updated = false;
+bool cam2Updated = false;
+int lockCameras[2];
+int lockCameras_Copy[2];
+//int token = 0;
 
 //list<str_Point> backgroundPoints;
 IplImage* actMapImg = cvCreateImage(cvSize(XN_VGA_X_RES*2, XN_VGA_Y_RES), IPL_DEPTH_8U, 3);
 IplImage* background_Model;
 char* windName_ActiviytMap = "Activity Map";
+CvMat* tilt_Rotation = cvCreateMat(3,3, CV_32FC1);
 boost::mutex mymutex;
 
 /*header methods*/
@@ -99,12 +109,16 @@ void initActMapValues(CameraProperties* cam2, const XnDepthPixel* depthMap2, Cam
 			checkCamPoint(x, y, &depthMap2, cam2, &minX, &maxX, &minY, &maxY, &minZ, &maxZ, &firstTime);
 		}
 	}
-	actMap_confVal.maxX = maxX; actMap_confVal.maxY = maxY; actMap_confVal.maxZ = maxZ;
+	cout << "MaxZ: " << maxZ << " MinZ: " << minZ  << endl;
+	cout << "MaxY: " << maxY << " MinY: " << minY  << endl;
+	cout << "MaxX: " << maxX << " MinX: " << minX  << endl;
+
+	actMap_confVal.maxX = maxX; actMap_confVal.maxY = maxY; actMap_confVal.maxZ = MAX_Z;
 	actMap_confVal.minX = minX; actMap_confVal.minY = minY; actMap_confVal.minZ = minZ;
 	//Find the size of the bins (x (X), y(Z) and color(Y)). 3D-2D
 	actMap_confVal.stepX = findStep(minX, maxX, XN_VGA_X_RES*2);
 	actMap_confVal.stepY = findStep(minY, maxY, 256);
-	actMap_confVal.stepZ = findStep(minZ, maxZ, XN_VGA_Y_RES);
+	actMap_confVal.stepZ = findStep(minZ, MAX_Z, XN_VGA_Y_RES);
 }
 
 float findStep(float fmin, float fmax, int nBins)
@@ -156,6 +170,44 @@ void compareValues(XnPoint3D *p3D, float* minX, float* maxX, float* minY, float*
 
 }
 
+void reduceTiltAngle_Array(XnPoint3D* points3D, int numPoints)
+{
+	CvMat* tmp = cvCreateMat(3,1, CV_32FC1);
+	CvMat* tmpOut = cvCreateMat(3,1, CV_32FC1);
+	for (int i = 0; i < numPoints; i++)
+	{
+		Utils::fillTheMatrix(tmp, &(points3D[i]), 3,1);
+		cvMatMul(tilt_Rotation, tmp, tmpOut);
+		points3D[i].X = (float) *(tmpOut->data.fl);
+		points3D[i].Y = (float) *(tmpOut->data.fl + tmpOut->step/sizeof(float));
+		points3D[i].Z = (float) *(tmpOut->data.fl + 2*tmpOut->step/sizeof(float));
+	}
+	
+	cvReleaseMat(&tmp);
+	cvReleaseMat(&tmpOut);
+}
+
+void reduceTiltAngle(vector<XnPoint3D*>* pointsCam)
+{
+	CvMat* tmp = cvCreateMat(3,1, CV_32FC1);
+	CvMat* tmpOut = cvCreateMat(3,1, CV_32FC1);
+	vector<XnPoint3D*>::iterator iter;
+	for (iter = pointsCam->begin(); iter != pointsCam->end(); iter++)
+	{
+		XnPoint3D* p = *iter;
+		Utils::fillTheMatrix(tmp, p, 3,1);
+		cvMatMul(tilt_Rotation, tmp, tmpOut);
+		p->X = (float) *(tmpOut->data.fl);
+		p->Y = (float) *(tmpOut->data.fl + tmpOut->step/sizeof(float));
+		p->Z = (float) *(tmpOut->data.fl + 2*tmpOut->step/sizeof(float));
+	}
+
+	cvReleaseMat(&tmp);
+	cvReleaseMat(&tmpOut);
+
+}
+
+
 void getActivityMapImage(const str_actMap* actMap, const XnDepthPixel** depthMap1, CameraProperties* cam1 ,const XnDepthPixel** depthMap2, CameraProperties* cam2)
 {
 	//Color map to store the height from 0 to 255.
@@ -191,6 +243,9 @@ void getActivityMapImage(const str_actMap* actMap, const XnDepthPixel** depthMap
 	//Transform all the points (R and t) from cam1-cs to cam2-cs
 	transformPoints(&pointsCam1_T, &pointsCam1, cam1);
 
+	reduceTiltAngle(&pointsCam1_T);
+	reduceTiltAngle(&pointsCam2);
+
 	createImage(&pointsCam1_T, actMap, &colorMap);
 	createImage(&pointsCam2, actMap,  &colorMap);
 
@@ -222,8 +277,9 @@ void updateImage(IplImage* actMapImg, XnPoint3D* points3D, int numPoints)
 		int x_2D = findCoordinate(points3D[i].X, actMap_confVal.minX, actMap_confVal.maxX, actMap_confVal.stepX);
 		int y_2D = findCoordinate(points3D[i].Z, actMap_confVal.minZ, actMap_confVal.maxZ, actMap_confVal.stepZ);
 	
+		int y = XN_VGA_Y_RES - y_2D;
 		//Create activity map using heat color for the height
-		uchar* ptr_Bs = (uchar*)(actMapImg->imageData + (y_2D*actMapImg->widthStep));
+		uchar* ptr_Bs = (uchar*)(actMapImg->imageData + (y*actMapImg->widthStep));
 		ptr_Bs[x_2D*3] = 0;
 		ptr_Bs[x_2D*3 + 1] = 0;
 		ptr_Bs[x_2D*3 + 2] = 255;
@@ -237,7 +293,7 @@ void createImage(vector<XnPoint3D*>* points, const str_actMap* actMap, int** col
 	for (iter = points->begin(); iter != points->end(); iter++)
 	{
 		XnPoint3D* p3D = *iter;
-		if (p3D->Y > -500) // filter the height.
+		if (p3D->Y > MAX_Y && p3D->Z < MAX_Z) // filter the height.
 		{
 			int x_2d = findCoordinate(p3D->X, actMap->minX, actMap->maxX, actMap->stepX);
 			int y_2d = findCoordinate(p3D->Z, actMap->minZ, actMap->maxZ, actMap->stepZ);
@@ -248,7 +304,8 @@ void createImage(vector<XnPoint3D*>* points, const str_actMap* actMap, int** col
 			findHeatColour(color, &r, &g, &b);
 
 			//Create activity map using heat color for the height
-			uchar* ptr_Bs = (uchar*)(actMapImg->imageData + (y_2d*actMapImg->widthStep));
+			int y = XN_VGA_Y_RES - y_2d; //for fliping over the Y axis.
+			uchar* ptr_Bs = (uchar*)(actMapImg->imageData + (y*actMapImg->widthStep));
 			if ((*colorMap)[y_2d*XN_VGA_X_RES+x_2d] < color)
 			{		
 				//str_Point backPoint;
@@ -569,10 +626,11 @@ void updateForeground(BackgroundSubtraction_factory* subtractor, CameraPropertie
 	int numPoints = 0;
 	bool stop = false;
 	int cont = 0;
-
 	while (!stop)
 	{
-		cvCopyImage(background_Model, actMapImg);
+	
+	//	cvCopyImage(background_Model, actMapImg);
+	
 		
 		grabImage(&cam, rgbImg, depthMap);
 		numPoints = subtractor->subtraction(points2D, depthMap); //returns the num poins of foreground
@@ -580,23 +638,100 @@ void updateForeground(BackgroundSubtraction_factory* subtractor, CameraPropertie
 		if (transform)
 			transformArrayPoints(points3D, cam, numPoints);
 
-		////update actMapImg with the points.
-		//use mutex
+		////update actMapImg with the points
+		
+//		reduceTiltAngle_Array(points3D, numPoints);
 		mylock.lock();
-		updateImage(actMapImg, points3D, numPoints);
+		{
+			if (cam.getCamId() == 1)
+			{
+				if (!cam2Updated)
+					cvCopyImage(background_Model, actMapImg);
+			}
+			else
+			{
+				if (!cam1Updated)
+					cvCopyImage(background_Model, actMapImg);
+			}
+			updateImage(actMapImg, points3D, numPoints);
+			if (cam.getCamId() == 1)
+			{
+				
+				if (cam2Updated)
+				{
+					cvShowImage(windName_ActiviytMap, actMapImg);
+					cam2Updated = false;
+				}
+				else
+					cam1Updated = true;
+			}
+			else
+			{
+				if (cam1Updated)
+				{
+					cvShowImage(windName_ActiviytMap, actMapImg);
+					cam1Updated = false;
+				}
+				else
+					cam2Updated = true;
+			}
+
+		}
 		mylock.unlock();
-
-		cvShowImage(windName_ActiviytMap, actMapImg);
-		cvShowImage(windName, rgbImg);
-
-		char c = cvWaitKey(1);
-		stop = (c == 27) || (cont > 350);
+//		cvShowImage(windName_ActiviytMap, actMapImg);
+		//if (cam.getCamId() == 1)
+		//{
+		//	lockCameras[0] = 1;
+		//	if (lockCameras[1] == 1)
+		//		cvShowImage(windName_ActiviytMap, actMapImg);
+		//	else
+		//		while(lockCameras[1] == 0);
+		//}
+		//else
+		//{
+		//	lockCameras[1] = 1;
+		//	if (lockCameras[0] == 1)
+		//		cvShowImage(windName_ActiviytMap, actMapImg);
+		//	else
+		//		while(lockCameras[0] == 0);
+		//}
+		
+		//Only the last threads display the image
+//		while (token != 0)
+//		{
+//			outDebug << "cam " << cam.getCamId() << " waiting. Token: " << token << endl;
+//			boost::this_thread::sleep(boost::posix_time::seconds(0.1));
+//		}
+		
+			cvShowImage(windName, rgbImg);
+			char c = cvWaitKey(1);
+			stop = (c == 27) || (cont > 350);
+//		}
 		//cont++;
 	}
 
 	delete(points2D);
 	delete(points3D);
 	delete(depthMap);
+	cvReleaseImage(&rgbImg);
+}
+
+void displayActivityMap()
+{
+//	boost::mutex::scoped_lock mylock(mymutex, boost::defer_lock); // defer_lock makes it initially unlocked
+	bool stop = false;
+	while (!stop)
+	{
+		if ((lockCameras[0] == 1) && (lockCameras[1] == 1))
+		{
+			cvShowImage(windName_ActiviytMap, actMapImg);
+			char c = cvWaitKey(1);
+			stop = (c == 27);
+			lockCameras[0] == 0;
+			lockCameras[0] == 0;
+		}
+	}
+	
 }
 
 int main()
@@ -606,6 +741,21 @@ int main()
 	Utils::rgbdInit(&cam1, &cam2);
 	Utils::loadCameraParameters(&cam1);
 	Utils::loadCameraParameters(&cam2);
+
+	lockCameras[0] = 0;
+	lockCameras[1] = 0;
+	lockCameras_Copy[0] = 0;
+	lockCameras_Copy[1] = 0;
+
+	//Tilt rotation matrix
+	CvMat* rot = cvCreateMat(3,1, CV_32FC1);
+	float* rotPtr_1 = (float*)(rot->data.fl);
+	float* rotPtr_2 = (float*)(rot->data.fl + rot->step/sizeof(float));
+	float* rotPtr_3 = (float*)(rot->data.fl + (2*rot->step/sizeof(float)));
+	*rotPtr_1 = TILT_ANGLE; // 5 degrees over the x axis
+	*rotPtr_2 = 0;
+	*rotPtr_3 = 0;
+	cvRodrigues2(rot, tilt_Rotation); 
 
 	//Init tranlsation matrix
 	int total = XN_VGA_X_RES*XN_VGA_Y_RES;
@@ -647,15 +797,17 @@ int main()
 	
 	//create activity map for both sensors
 	getActivityMapImage(&actMap_confVal, (const XnDepthPixel**)&depthMap1, &cam1,(const XnDepthPixel**)&depthMap2, &cam2);
-	cvFlip(actMapImg, NULL,0);
+//	cvFlip(actMapImg, NULL,0);
 	background_Model = cvCloneImage(actMapImg);
 
 	cvNamedWindow(windName_ActiviytMap);
 
 //	ptime time_start_wait(microsec_clock::local_time());
+//	boost::thread thr1(displayActivityMap);
 	boost::thread thr2(updateForeground, subtractor2, cam2, false);
 	updateForeground(subtractor1, cam1, true);
 	thr2.join();
+//	thr1.join();
 
 	//Take time
 //	ptime time_end_wait(microsec_clock::local_time());
